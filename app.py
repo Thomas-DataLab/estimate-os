@@ -28,7 +28,9 @@ from src.services.pert_engine import (
 )
 from src.services.completeness_gate import evaluate_completeness
 from src.services.analogous_search import find_analogous_projects
+from src.services.llm_extractor import extract_scope
 from src.services.mock_data import DEMO_BRIEFS, PARSED_SCENARIOS
+from src.repositories.db_repository import commit_actuals_reconciliation, get_historical_projects
 
 DB_PATH = BASE_DIR / "data" / "estimateos.db"
 
@@ -87,6 +89,8 @@ if "active_scope" not in st.session_state:
     st.session_state["active_scope"] = PARSED_SCENARIOS[st.session_state["active_scenario_name"]]
 if "audit_result" not in st.session_state:
     st.session_state["audit_result"] = evaluate_completeness(st.session_state["active_scope"])
+if "reconciliation_toast" not in st.session_state:
+    st.session_state["reconciliation_toast"] = None
 
 # Sidebar Controls & Domain Presets
 with st.sidebar:
@@ -101,6 +105,18 @@ with st.sidebar:
         st.session_state["active_scope"] = PARSED_SCENARIOS[scenario_selection]
         st.session_state["audit_result"] = evaluate_completeness(st.session_state["active_scope"])
         st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 🔑 AI Engine (Optional)")
+    gemini_key = st.text_input(
+        "Google Gemini API Key (0đ Free Tier):",
+        type="password",
+        help="Optional. Leave blank to run EstimateOS Built-in Dynamic Heuristic Extractor. Or get a free key at aistudio.google.com"
+    )
+    if not gemini_key:
+        st.caption("🟢 Running **Zero-Token Dynamic Heuristic Engine** (Offline Ready)")
+    else:
+        st.caption("⚡ Connected to **Google Gemini 2.0 Flash REST Engine**")
 
     st.markdown("---")
     st.markdown("### ⚙️ Calibration Model")
@@ -134,8 +150,10 @@ with tab1:
     col_btn1, col_btn2 = st.columns([1, 4])
     with col_btn1:
         if st.button("⚡ Deconstruct Scope & Audit Gate", type="primary", use_container_width=True):
-            st.session_state["active_scope"] = PARSED_SCENARIOS[st.session_state["active_scenario_name"]]
-            st.session_state["audit_result"] = evaluate_completeness(st.session_state["active_scope"])
+            with st.spinner("Extracting structured workstreams and auditing completeness..."):
+                parsed = extract_scope(raw_text, api_key=gemini_key)
+                st.session_state["active_scope"] = parsed
+                st.session_state["audit_result"] = evaluate_completeness(parsed)
             st.success("Scope deconstructed into structured Work Breakdown Structure (WBS)!")
 
     scope: ScopeIntakeSchema = st.session_state["active_scope"]
@@ -351,6 +369,10 @@ with tab3:
     st.markdown("### 🔄 Step 3: Delivery Actuals & Variance Diagnostic")
     st.caption("Post-handover reconciliation. Input real timesheets to close the feedback loop, analyze variance drivers, and train the institutional calibration model.")
 
+    if st.session_state["reconciliation_toast"]:
+        st.success(st.session_state["reconciliation_toast"])
+        st.session_state["reconciliation_toast"] = None
+
     r_col1, r_col2 = st.columns([1, 1])
     with r_col1:
         st.markdown("#### Project Details")
@@ -386,6 +408,7 @@ with tab3:
         var_h = round(actual_input - calibrated_total, 1)
         var_pct = round((var_h / calibrated_total) * 100.0, 1)
         obs_k = round(actual_input / total_pert_hours, 2)
+        posterior_k = calculate_bayesian_update(calib_factor, 5.0, [obs_k])
 
         v1, v2 = st.columns(2)
         with v1:
@@ -399,13 +422,26 @@ with tab3:
             <div style="font-size: 0.85rem; color: #94A3B8; margin-top: 6px;">
                 Prior Segment Calibration Mean: <b>{calib_factor}x</b> (Weight S=5.0)<br>
                 Observed Project Drag: <b>{obs_k}x</b><br>
-                ➔ Recalculated Posterior Mean: <b>{calculate_bayesian_update(calib_factor, 5.0, [obs_k])}x</b>
+                ➔ Recalculated Posterior Mean: <b>{posterior_k}x</b>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
         if st.button("💾 Commit Actuals to Organizational Memory", type="primary", use_container_width=True):
-            st.success(f"Project '{scope.project_name}' successfully reconciled! Posterior calibration factor updated to {calculate_bayesian_update(calib_factor, 5.0, [obs_k])}x in SQLite.")
+            res = commit_actuals_reconciliation(
+                project_name=scope.project_name,
+                client_type=scope.client_type,
+                transaction_type=scope.transaction_type,
+                jurisdiction=scope.jurisdiction,
+                estimated_hours=calibrated_total,
+                actual_hours=actual_input,
+                variance_reason=variance_reason,
+                retro_notes=retro_notes,
+                calib_factor_prior=calib_factor,
+                calib_factor_posterior=posterior_k
+            )
+            st.session_state["reconciliation_toast"] = f"Project '{scope.project_name}' (ID: #{res['project_id']}) committed! Posterior calibration factor updated to {res['posterior_mean']}x in SQLite."
+            st.rerun()
 
 
 # -------------------------------------------------------------
@@ -415,13 +451,8 @@ with tab4:
     st.markdown("### 📈 Step 4: Organizational Learning & Accuracy Telemetry")
     st.caption("Proof that the organization is becoming more accurate over time. Mean Magnitude of Relative Error (MMRE) steadily decreases as empirical calibration takes effect.")
 
-    # Read historical dataset
-    if DB_PATH.exists():
-        conn = sqlite3.connect(DB_PATH)
-        df_hist = pd.read_sql("SELECT * FROM projects_historical ORDER BY delivery_date ASC", conn)
-        conn.close()
-    else:
-        df_hist = pd.DataFrame()
+    # Read historical dataset live from repository
+    df_hist = get_historical_projects()
 
     if not df_hist.empty:
         # Calculate MRE for each project
