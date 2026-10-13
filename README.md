@@ -6,8 +6,11 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.38+-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-10B981?logo=streamlit&logoColor=white)](https://estimate-os-rbaaveipfjfeqnlstxznow.streamlit.app/)
 [![Tests](https://img.shields.io/badge/Tests-11%20Passed-10B981?logo=pytest&logoColor=white)](https://pytest.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+> 🌐 **Production Live Demo URL**: [https://estimate-os-rbaaveipfjfeqnlstxznow.streamlit.app/](https://estimate-os-rbaaveipfjfeqnlstxznow.streamlit.app/)
 
 ---
 
